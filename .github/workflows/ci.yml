@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  st-compile:
+    name: matiec compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build matiec (the compiler the OpenPLC runtime uses)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf
+          git clone --depth 1 https://github.com/beremiz/matiec.git /tmp/matiec
+          cd /tmp/matiec
+          ( ./autogen.sh || autoreconf -i )
+          ./configure
+          make -j2
+
+      - name: Compile fluxline.st
+        run: |
+          /tmp/matiec/iec2c program/fluxline.st
+          echo "ST compiles clean under matiec"
+
+  sim-offline:
+    name: offline twin tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r sim/requirements.txt
+      - run: python -m pytest sim/test_scenarios.py -v

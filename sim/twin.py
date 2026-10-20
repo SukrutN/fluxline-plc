@@ -26,7 +26,10 @@ from pymodbus.datastore import (
     ModbusServerContext,
     ModbusSlaveContext,
 )
-from pymodbus.server import StartTcpServer
+try:
+    from pymodbus.server import StartTcpServer          # pymodbus >= 3.0
+except ImportError:                                      # pragma: no cover
+    from pymodbus.server.sync import StartTcpServer      # pymodbus 2.x
 
 # ---------------------------------------------------------------- geometry
 
