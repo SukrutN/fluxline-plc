@@ -97,6 +97,28 @@ OpenPLC runtime is available; it skips (never fails) without one.
 - Phase 3 (planned): the FLUXLINE web line reads this runtime's registers
   over Modbus and becomes its live operator dashboard.
 
+## ST compiler notes (the gotchas CI caught)
+
+Every push compiles the program with matiec — the exact compiler the runtime
+uses. These are the syntax landmines it caught during bring-up, kept here so
+the next author doesn't re-learn them:
+
+1. **Single POU.** A user `FUNCTION_BLOCK` or `TYPE` declaration before the
+   program poisons located-variable parsing (`pe AT %IX0.0 : BOOL`) in
+   beremiz/matiec. The library's own FBs are fine — they parse in a separate
+   session. Keep everything in one `PROGRAM`, use the library FBs (TON, CTU…)
+   directly.
+2. **One VAR block, one kind.** The first declaration decides how the whole
+   `VAR…END_VAR` section is parsed. Put all located variables (`AT %IX…`/`%QW…`)
+   in their own block, plain variables and library FB instances in another.
+3. **IEC identifiers are case-insensitive.** `tOn : TON` names an instance
+   with the *keyword* `TON` — the compiler reads it as a type, not a name.
+4. **Typed literals in expressions.** `alarm_w OR 1` fails: `OR` is defined
+   for `ANY_BIT` (BOOL and bitstrings), not INT. Declare status words as
+   `WORD` and write `WORD#1`.
+5. **No BOM.** A UTF-8 BOM at the top of the file makes matiec *silently*
+   compile an empty program — no error, all-zero output. Save as plain UTF-8.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
