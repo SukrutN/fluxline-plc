@@ -434,7 +434,13 @@ FOR i := 0 TO 15 DO
       cfm := gate_confirm OR chute_pe;
     END_IF;
 
-    IF fired AND (cfm OR (p_pos[i] > gate_end + 300.0)) THEN
+    (* a confirm only counts for a slot whose piece has actually reached
+       its gate: cfm is a shared level across lanes, so a neighbour's
+       confirm tail must not credit a slot that is still 120 mm short of
+       its own gate - that phantom credit drops the coil and the real
+       piece then crosses a dead gate and is never diverted. *)
+    IF fired AND (p_pos[i] >= gate_end)
+       AND (cfm OR (p_pos[i] > gate_end + 60.0)) THEN
       p_routed[i] := TRUE;
       p_active[i] := FALSE;
       c_routed := c_routed + 1;

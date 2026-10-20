@@ -352,13 +352,13 @@ class Twin:
                     self.results.append(p)
                     self.pieces.remove(p)
                     if lane == 4:
-                        self.chute_until = now + 0.3
+                        self.chute_until = now + 0.5
                     else:
                         confirm_now = True
             self._set_di(7, confirm_now or now < self.confirm_until)
             self._set_di(8, now < self.chute_until)
             if confirm_now:
-                self.confirm_until = now + 0.25
+                self.confirm_until = now + 0.5
 
             # end of belt, unrouted
             for p in [p for p in self.pieces if p["pos"] > BELT_LEN + 100]:

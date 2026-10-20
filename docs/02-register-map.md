@@ -42,9 +42,9 @@ in commissioning step 4.
 | `%QW1` | heartbeat | increments 1/s, wraps 32000 | HMI supervision: any freeze is visible here |
 | `%QW2` | state | 0..4 | see table above |
 | `%QW3` | alarm | bit mask | see table above |
-| `%QW4` | availability ×10 | 0..1000 | A = run/(run+down) |
-| `%QW5` | performance ×10 | 0..1000 | P = rolling pieces/min ÷ ideal |
-| `%QW6` | quality ×10 | 0..1000 | Q = routed/detected |
+| `%QW4` | availability | per-mille 0..1000 | A = run/(run+down), 956 reads as 95.6% |
+| `%QW5` | performance | per-mille 0..1000 | P = rolling pieces/min ÷ ideal, capped |
+| `%QW6` | quality | per-mille 0..1000 | Q = routed/detected |
 | `%QW7` | L01 count | pieces | signed 16-bit, wraps past 32767 |
 | `%QW8` | L02 count | pieces | |
 | `%QW9` | L03 count | pieces | |
