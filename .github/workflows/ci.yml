@@ -25,7 +25,8 @@ jobs:
 
       - name: Compile fluxline.st
         run: |
-          /tmp/matiec/iec2c program/fluxline.st
+          cd /tmp/matiec
+          ./iec2c "$GITHUB_WORKSPACE/program/fluxline.st"
           echo "ST compiles clean under matiec"
 
   sim-offline:
