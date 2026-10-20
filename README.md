@@ -65,9 +65,11 @@ Then the closed loop, no hardware:
 
 ## Design choices that matter
 
-- **Single file, sectioned.** The OpenPLC runtime uploads one `.st`; the file
-  is organized so review is still practical (types → FBs → I/O → sections 0-8,
-  each with a banner).
+- **Single POU, sectioned.** The OpenPLC runtime uploads one `.st`, and the
+  program deliberately sticks to the syntax surface every matiec build
+  accepts — no derived types or user function blocks between the program and
+  its I/O. Body is organized as banner-commented sections 0-8 so review is
+  still practical.
 - **No wall clock in the PLC.** All timing derives from the configured scan
   period — slow scans slow the sim, never cause spurious watchdog trips.
 - **Sensor re-sync beats dead reckoning.** Piece positions re-sync at every

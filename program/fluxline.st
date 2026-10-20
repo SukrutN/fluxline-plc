@@ -3,6 +3,9 @@
 (*  OpenPLC runtime . IEC 61131-3 Structured Text                          *)
 (*                                                                        *)
 (*  One belt, four sensors, three lanes and a reject chute.                *)
+(*  Single POU by design: the OpenPLC runtime compiles one uploaded .st    *)
+(*  file, and this program deliberately uses the syntax surface every      *)
+(*  matiec build accepts - no derived types, no user function blocks.      *)
 (*                                                                        *)
 (*  Verdict law (fixed, decided at the load cell):                         *)
 (*    height >= 165 mm               -> L03 OVERSIZE                       *)
@@ -17,72 +20,6 @@
 (*  I/O and register maps: docs/01-io-map.md, docs/02-register-map.md      *)
 (*  License: MIT (see LICENSE)                                             *)
 (* ==================================================================== *)
-
-
-(* -------------------------------------------------------------------- *)
-(*  Types                                                                *)
-(* -------------------------------------------------------------------- *)
-
-TYPE PIECE_T :
-STRUCT
-  active  : BOOL;      (* slot in use *)
-  pos     : REAL;      (* mm from the photo-eye *)
-  height  : REAL;      (* mm, latched at HS *)
-  metal   : BOOL;      (* latched at ID *)
-  weight  : REAL;      (* grams, latched at LC *)
-  verdict : INT;       (* 0 none, 1 L01, 2 L02, 3 L03, 4 reject *)
-  routed  : BOOL;      (* divert issued and completed *)
-  id_done : BOOL;      (* ID window consumed *)
-  lc_done : BOOL;      (* LC window consumed, verdict final *)
-END_STRUCT
-;
-END_TYPE
-
-
-(* -------------------------------------------------------------------- *)
-(*  Function blocks                                                      *)
-(* -------------------------------------------------------------------- *)
-
-(* Time-based glitch filter. Output follows input only after the signal  *)
-(* has been stable for PT. Keeps contact bounce and sensor chatter from  *)
-(* reaching the logic.                                                   *)
-FUNCTION_BLOCK FB_Debounce
-VAR_INPUT
-  sig : BOOL;          (* raw signal *)
-  pt  : TIME;          (* stability time, both edges *)
-END_VAR
-VAR_OUTPUT
-  q   : BOOL;
-END_VAR
-VAR
-  tOn  : TON;
-  tOff : TON;
-END_VAR
-  tOn(IN := sig, PT := pt);
-  tOff(IN := NOT sig, PT := pt);
-  q := tOn.Q AND NOT tOff.Q;
-END_FUNCTION_BLOCK
-
-
-(* Rising-edge detector.                                                 *)
-FUNCTION_BLOCK FB_RTrig
-VAR_INPUT
-  sig : BOOL;
-END_VAR
-VAR_OUTPUT
-  q   : BOOL;
-END_VAR
-VAR
-  last : BOOL := FALSE;
-END_VAR
-  q := sig AND NOT last;
-  last := sig;
-END_FUNCTION_BLOCK
-
-
-(* -------------------------------------------------------------------- *)
-(*  Main program                                                         *)
-(* -------------------------------------------------------------------- *)
 
 PROGRAM FLUXLINE
 VAR
@@ -111,11 +48,11 @@ VAR
   lamp_r        AT %QX0.7 : BOOL;  (* stack light red *)
   horn          AT %QX1.0 : BOOL;  (* alarm horn *)
 
-  (* ---- word outputs: telemetry over Modbus ---- *)
+  (* ---- word outputs: telemetry over Modbus holding registers ---- *)
   sp_raw        AT %QW0 : INT;     (* belt speed setpoint raw *)
   heartbeat     AT %QW1 : INT;     (* increments 1x per second - supervision *)
   state_w       AT %QW2 : INT;     (* 0 INIT 1 IDLE 2 RUN 3 JAM 4 ESTOP *)
-  alarm_w       AT %QW3 : INT;     (* bit0 JAM bit1 ESTOP bit2 CHAIN bit3 STALL bit4 FULL *)
+  alarm_w       AT %QW3 : WORD;    (* bit0 JAM bit1 ESTOP bit2 CHAIN bit3 STALL bit4 FULL *)
   a10           AT %QW4 : INT;     (* availability x10 *)
   p10           AT %QW5 : INT;     (* performance x10 *)
   q10           AT %QW6 : INT;     (* quality x10 *)
@@ -138,19 +75,31 @@ VAR
   cfg_prearm    AT %QW25 : INT;    (* diverter pre-arm mm.  default 120   *)
   cfg_scan_ms   AT %QW26 : INT;    (* scan period ms.       default 10    *)
   cfg_belt_mms  AT %QW27 : INT;    (* belt speed mm/s.      default 120   *)
+END_VAR
 
-  (* ---- debounced inputs ---- *)
+VAR
+  (* ---- debounce timers - stabilising every machine input ---- *)
+  pe_on_t       : TON;
+  pe_off_t      : TON;
+  id_on_t       : TON;
+  id_off_t      : TON;
+  start_on_t    : TON;
+  start_off_t   : TON;
+  stop_on_t     : TON;
+  stop_off_t    : TON;
+
   pe        : BOOL;
   id_met    : BOOL;
   pb_start  : BOOL;
   pb_stop   : BOOL;
-  deb_pe    : FB_Debounce;
-  deb_id    : FB_Debounce;
-  deb_start : FB_Debounce;
-  deb_stop  : FB_Debounce;
-  trig_start : FB_RTrig;
-  trig_stop  : FB_RTrig;
-  trig_pe    : FB_RTrig;
+
+  (* trailing edges - computed manually, three signals used *)
+  pe_last   : BOOL := FALSE;
+  pe_rise   : BOOL;
+  start_last : BOOL := FALSE;
+  start_rise : BOOL;
+  stop_last : BOOL := FALSE;
+  stop_rise : BOOL;
 
   (* ---- state machine ---- *)
   state : INT := 0;                (* 0 INIT 1 IDLE 2 RUN 3 JAM 4 ESTOP *)
@@ -158,8 +107,17 @@ VAR
   jam_latched   : BOOL := FALSE;
   tracker_full  : BOOL := FALSE;
 
-  (* ---- piece tracking ---- *)
-  pieces    : ARRAY[0..15] OF PIECE_T;
+  (* ---- piece tracker: 16 parallel slots ---- *)
+  p_active   : ARRAY[0..15] OF BOOL;
+  p_pos      : ARRAY[0..15] OF REAL;
+  p_height   : ARRAY[0..15] OF REAL;
+  p_metal    : ARRAY[0..15] OF BOOL;
+  p_weight   : ARRAY[0..15] OF REAL;
+  p_verdict  : ARRAY[0..15] OF INT;   (* 0 none, 1 L01, 2 L02, 3 L03, 4 reject *)
+  p_routed   : ARRAY[0..15] OF BOOL;
+  p_id_done  : ARRAY[0..15] OF BOOL;
+  p_lc_done  : ARRAY[0..15] OF BOOL;
+
   speed_mms : REAL;
   sp_mms    : REAL;
   scan_s    : REAL;
@@ -224,21 +182,37 @@ VAR
   (* ---- loop temps ---- *)
   i : INT;
   d : INT;
+  free_slot : BOOL;
 END_VAR
 
 
 (* ==================================================================== *)
-(*  0 . inputs                                                           *)
+(*  0 . input conditioning                                               *)
 (* ==================================================================== *)
 
-deb_pe(sig := pe_raw, pt := T#20ms);            pe       := deb_pe.q;
-deb_id(sig := id_raw, pt := T#20ms);            id_met   := deb_id.q;
-deb_start(sig := pb_start_raw, pt := T#50ms);   pb_start := deb_start.q;
-deb_stop(sig := pb_stop_raw, pt := T#50ms);     pb_stop  := deb_stop.q;
+pe_on_t(IN := pe_raw, PT := T#20ms);
+pe_off_t(IN := NOT pe_raw, PT := T#20ms);
+pe := pe_on_t.Q AND NOT pe_off_t.Q;
 
-trig_start(sig := pb_start);
-trig_stop(sig := pb_stop);
-trig_pe(sig := pe);
+id_on_t(IN := id_raw, PT := T#20ms);
+id_off_t(IN := NOT id_raw, PT := T#20ms);
+id_met := id_on_t.Q AND NOT id_off_t.Q;
+
+start_on_t(IN := pb_start_raw, PT := T#50ms);
+start_off_t(IN := NOT pb_start_raw, PT := T#50ms);
+pb_start := start_on_t.Q AND NOT start_off_t.Q;
+
+stop_on_t(IN := pb_stop_raw, PT := T#50ms);
+stop_off_t(IN := NOT pb_stop_raw, PT := T#50ms);
+pb_stop := stop_on_t.Q AND NOT stop_off_t.Q;
+
+(* manual trailing edges *)
+pe_rise := pe AND NOT pe_last;
+pe_last := pe;
+start_rise := pb_start AND NOT start_last;
+start_last := pb_start;
+stop_rise := pb_stop AND NOT stop_last;
+stop_last := pb_stop;
 
 (* The E-stop chain is never debounced - fail-safe means immediate. *)
 IF NOT estop_chain THEN
@@ -254,29 +228,29 @@ END_IF;
 (* values fall back to compiled defaults so the line always has a law.   *)
 
 cfg_tall := INT_TO_REAL(cfg_tall_mm);
-IF cfg_tall < 50.0 OR cfg_tall > 380.0 THEN cfg_tall := 165.0; END_IF;
+IF (cfg_tall < 50.0) OR (cfg_tall > 380.0) THEN cfg_tall := 165.0; END_IF;
 
 cfg_min := INT_TO_REAL(cfg_min_g);
-IF cfg_min < 100.0 OR cfg_min > 8000.0 THEN cfg_min := 2000.0; END_IF;
+IF (cfg_min < 100.0) OR (cfg_min > 8000.0) THEN cfg_min := 2000.0; END_IF;
 
 cfg_max := INT_TO_REAL(cfg_max_g);
-IF cfg_max < 4000.0 OR cfg_max > 29000.0 THEN cfg_max := 12000.0; END_IF;
+IF (cfg_max < 4000.0) OR (cfg_max > 29000.0) THEN cfg_max := 12000.0; END_IF;
 IF cfg_max <= cfg_min THEN cfg_max := cfg_min + 1000.0; END_IF;
 
 jam_lim := INT_TO_REAL(cfg_jam_s);
-IF jam_lim < 1.0 OR jam_lim > 60.0 THEN jam_lim := 8.0; END_IF;
+IF (jam_lim < 1.0) OR (jam_lim > 60.0) THEN jam_lim := 8.0; END_IF;
 
 ideal_rate := INT_TO_REAL(cfg_ideal);
-IF ideal_rate < 1.0 OR ideal_rate > 200.0 THEN ideal_rate := 34.0; END_IF;
+IF (ideal_rate < 1.0) OR (ideal_rate > 200.0) THEN ideal_rate := 34.0; END_IF;
 
 prearm := INT_TO_REAL(cfg_prearm);
-IF prearm < 20.0 OR prearm > 500.0 THEN prearm := 120.0; END_IF;
+IF (prearm < 20.0) OR (prearm > 500.0) THEN prearm := 120.0; END_IF;
 
 scan_s := INT_TO_REAL(cfg_scan_ms) * 0.001;
-IF scan_s < 0.001 OR scan_s > 0.1 THEN scan_s := 0.01; END_IF;
+IF (scan_s < 0.001) OR (scan_s > 0.1) THEN scan_s := 0.01; END_IF;
 
 sp_mms := INT_TO_REAL(cfg_belt_mms);
-IF sp_mms < 20.0 OR sp_mms > 590.0 THEN sp_mms := 120.0; END_IF;
+IF (sp_mms < 20.0) OR (sp_mms > 590.0) THEN sp_mms := 120.0; END_IF;
 
 (* analog scaling *)
 height_mm := INT_TO_REAL(height_raw) * height_max / raw_max;
@@ -285,10 +259,9 @@ speed_mms := INT_TO_REAL(speed_fb_raw) * speed_max / raw_max;
 
 (* tacho fallback: if commanded to run but feedback reads zero, use the   *)
 (* setpoint so position tracking keeps working with a missing sensor.     *)
-IF belt_run AND speed_mms < 5.0 THEN
-  speed_mms := sp_mms;
-END_IF;
-IF NOT belt_run THEN
+IF belt_run THEN
+  IF speed_mms < 5.0 THEN speed_mms := sp_mms; END_IF;
+ELSE
   speed_mms := 0.0;
 END_IF;
 
@@ -308,7 +281,7 @@ CASE state OF
 
   1: (* IDLE *)
     belt_run := FALSE;
-    IF trig_start.q AND estop_chain THEN
+    IF start_rise AND estop_chain THEN
       jam_s := 0.0;
       quiet_s := 0.0;
       state := 2;
@@ -321,14 +294,14 @@ CASE state OF
       state := 4;
     ELSIF jam_latched THEN
       state := 3;
-    ELSIF trig_stop.q THEN
+    ELSIF stop_rise THEN
       state := 1;
     END_IF;
 
   3: (* JAM - belt stopped, horn steady, wait for manual reset *)
     belt_run := FALSE;
     horn_on := TRUE;
-    IF trig_start.q AND estop_chain THEN
+    IF start_rise AND estop_chain THEN
       jam_latched := FALSE;
       horn_on := FALSE;
       state := 1;
@@ -336,16 +309,17 @@ CASE state OF
 
   4: (* ESTOP - everything off, latched until chain healthy + start *)
     belt_run := FALSE;
-    IF estop_chain AND trig_start.q THEN
+    IF estop_chain AND start_rise THEN
       estop_latched := FALSE;
       jam_latched := FALSE;
       state := 1;
     END_IF;
 END_CASE;
 
-IF (state = 2) THEN
+IF state = 2 THEN
   run_s := run_s + scan_s;
-ELSIF (state = 3) OR (state = 4) THEN
+END_IF;
+IF (state = 3) OR (state = 4) THEN
   down_s := down_s + scan_s;
 END_IF;
 
@@ -355,21 +329,23 @@ END_IF;
 (* ==================================================================== *)
 
 (* new piece on the photo-eye rising edge *)
-IF trig_pe.q AND (state = 2) THEN
+fired := FALSE;
+IF pe_rise AND (state = 2) THEN
   i := -1;
   FOR d := 0 TO 15 DO
-    IF NOT pieces[d].active AND i < 0 THEN i := d; END_IF;
+    free_slot := NOT p_active[d];
+    IF free_slot AND (i < 0) THEN i := d; END_IF;
   END_FOR;
   IF i >= 0 THEN
-    pieces[i].active  := TRUE;
-    pieces[i].pos     := 0.0;
-    pieces[i].height  := 0.0;
-    pieces[i].metal   := FALSE;
-    pieces[i].weight  := 0.0;
-    pieces[i].verdict := 0;
-    pieces[i].routed  := FALSE;
-    pieces[i].id_done := FALSE;
-    pieces[i].lc_done := FALSE;
+    p_active[i]  := TRUE;
+    p_pos[i]     := 0.0;
+    p_height[i]  := 0.0;
+    p_metal[i]   := FALSE;
+    p_weight[i]  := 0.0;
+    p_verdict[i] := 0;
+    p_routed[i]  := FALSE;
+    p_id_done[i] := FALSE;
+    p_lc_done[i] := FALSE;
     c_detect := c_detect + 1;
     detect_tot := detect_tot + 1.0;
   ELSE
@@ -378,49 +354,51 @@ IF trig_pe.q AND (state = 2) THEN
 END_IF;
 
 (* propagate, measure, decide *)
+IF state = 2 THEN
 FOR i := 0 TO 15 DO
-  IF pieces[i].active AND NOT pieces[i].routed THEN
-    pieces[i].pos := pieces[i].pos + speed_mms * scan_s;
+  IF p_active[i] AND NOT p_routed[i] THEN
+    p_pos[i] := p_pos[i] + speed_mms * scan_s;
 
     (* HS - track the max height across the curtain window *)
-    IF (pieces[i].pos >= hs_pos) AND (pieces[i].pos < hs_pos + hs_win) THEN
-      IF height_mm > pieces[i].height THEN
-        pieces[i].height := height_mm;
+    IF (p_pos[i] >= hs_pos) AND (p_pos[i] < hs_pos + hs_win) THEN
+      IF height_mm > p_height[i] THEN
+        p_height[i] := height_mm;
       END_IF;
     END_IF;
 
     (* ID - latch the metal bit on the crossing scan *)
-    IF (NOT pieces[i].id_done) AND (pieces[i].pos >= id_pos) THEN
-      pieces[i].metal := id_met;
-      pieces[i].id_done := TRUE;
+    IF (NOT p_id_done[i]) AND (p_pos[i] >= id_pos) THEN
+      p_metal[i] := id_met;
+      p_id_done[i] := TRUE;
     END_IF;
 
     (* LC - track the max weight across the cell window, then decide *)
-    IF (pieces[i].pos >= lc_pos) AND (pieces[i].pos < lc_pos + lc_win) THEN
-      IF weight_g > pieces[i].weight THEN
-        pieces[i].weight := weight_g;
+    IF (p_pos[i] >= lc_pos) AND (p_pos[i] < lc_pos + lc_win) THEN
+      IF weight_g > p_weight[i] THEN
+        p_weight[i] := weight_g;
       END_IF;
     END_IF;
-    IF NOT pieces[i].lc_done AND pieces[i].pos >= lc_pos + lc_win THEN
-      IF pieces[i].height >= cfg_tall THEN
-        pieces[i].verdict := 3;
-      ELSIF pieces[i].metal THEN
-        pieces[i].verdict := 2;
-      ELSIF (pieces[i].weight < cfg_min) OR (pieces[i].weight > cfg_max) THEN
-        pieces[i].verdict := 4;
+    IF (NOT p_lc_done[i]) AND (p_pos[i] >= lc_pos + lc_win) THEN
+      IF p_height[i] >= cfg_tall THEN
+        p_verdict[i] := 3;
+      ELSIF p_metal[i] THEN
+        p_verdict[i] := 2;
+      ELSIF (p_weight[i] < cfg_min) OR (p_weight[i] > cfg_max) THEN
+        p_verdict[i] := 4;
       ELSE
-        pieces[i].verdict := 1;
+        p_verdict[i] := 1;
       END_IF;
-      pieces[i].lc_done := TRUE;
+      p_lc_done[i] := TRUE;
     END_IF;
 
     (* end of belt without a divert - missed piece *)
-    IF pieces[i].pos > belt_len THEN
-      pieces[i].active := FALSE;
+    IF p_pos[i] > belt_len THEN
+      p_active[i] := FALSE;
       missed := missed + 1;
     END_IF;
   END_IF;
 END_FOR;
+END_IF;
 
 
 (* ==================================================================== *)
@@ -436,36 +414,39 @@ div_l3 := FALSE;
 div_rj := FALSE;
 
 IF state = 2 THEN
-  FOR i := 0 TO 15 DO
-    IF pieces[i].active AND NOT pieces[i].routed AND pieces[i].verdict > 0 THEN
-      fired := FALSE;
-      gate_end := 0.0;
-      cfm := gate_confirm;
+FOR i := 0 TO 15 DO
+  IF p_active[i] AND (NOT p_routed[i]) AND (p_verdict[i] > 0) THEN
+    fired := FALSE;
+    gate_end := 0.0;
+    cfm := gate_confirm;
 
-      CASE pieces[i].verdict OF
-        1: IF pieces[i].pos >= g_l1 - prearm THEN div_l1 := TRUE; fired := TRUE; gate_end := g_l1; END_IF;
-        2: IF pieces[i].pos >= g_l2 - prearm THEN div_l2 := TRUE; fired := TRUE; gate_end := g_l2; END_IF;
-        3: IF pieces[i].pos >= g_l3 - prearm THEN div_l3 := TRUE; fired := TRUE; gate_end := g_l3; END_IF;
-        4: IF pieces[i].pos >= g_rj - prearm THEN div_rj := TRUE; fired := TRUE; gate_end := g_rj;
-             cfm := gate_confirm OR chute_pe;
-           END_IF;
-      END_CASE;
-
-      IF fired AND (cfm OR pieces[i].pos > gate_end + 300.0) THEN
-        pieces[i].routed := TRUE;
-        pieces[i].active := FALSE;
-        c_routed := c_routed + 1;
-        route_tot := route_tot + 1.0;
-        buckets[bucket_i] := buckets[bucket_i] + 1;
-        CASE pieces[i].verdict OF
-          1: c_l1 := c_l1 + 1;
-          2: c_l2 := c_l2 + 1;
-          3: c_l3 := c_l3 + 1;
-          4: c_rj := c_rj + 1;
-        END_CASE;
-      END_IF;
+    IF (p_verdict[i] = 1) AND (p_pos[i] >= g_l1 - prearm) THEN
+      div_l1 := TRUE; fired := TRUE; gate_end := g_l1;
     END_IF;
-  END_FOR;
+    IF (p_verdict[i] = 2) AND (p_pos[i] >= g_l2 - prearm) THEN
+      div_l2 := TRUE; fired := TRUE; gate_end := g_l2;
+    END_IF;
+    IF (p_verdict[i] = 3) AND (p_pos[i] >= g_l3 - prearm) THEN
+      div_l3 := TRUE; fired := TRUE; gate_end := g_l3;
+    END_IF;
+    IF (p_verdict[i] = 4) AND (p_pos[i] >= g_rj - prearm) THEN
+      div_rj := TRUE; fired := TRUE; gate_end := g_rj;
+      cfm := gate_confirm OR chute_pe;
+    END_IF;
+
+    IF fired AND (cfm OR (p_pos[i] > gate_end + 300.0)) THEN
+      p_routed[i] := TRUE;
+      p_active[i] := FALSE;
+      c_routed := c_routed + 1;
+      route_tot := route_tot + 1.0;
+      buckets[bucket_i] := buckets[bucket_i] + 1;
+      IF p_verdict[i] = 1 THEN c_l1 := c_l1 + 1; END_IF;
+      IF p_verdict[i] = 2 THEN c_l2 := c_l2 + 1; END_IF;
+      IF p_verdict[i] = 3 THEN c_l3 := c_l3 + 1; END_IF;
+      IF p_verdict[i] = 4 THEN c_rj := c_rj + 1; END_IF;
+    END_IF;
+  END_IF;
+END_FOR;
 END_IF;
 
 
@@ -485,7 +466,7 @@ IF state = 2 THEN
   END_IF;
 
   (* stall: running but nothing new arrives - alarm only, belt keeps going *)
-  IF trig_pe.q THEN
+  IF pe_rise THEN
     quiet_s := 0.0;
     stall_on := FALSE;
   ELSE
@@ -501,7 +482,7 @@ END_IF;
 (* tracker status: full only when no free slot exists *)
 tracker_full := TRUE;
 FOR i := 0 TO 15 DO
-  IF NOT pieces[i].active THEN tracker_full := FALSE; END_IF;
+  IF NOT p_active[i] THEN tracker_full := FALSE; END_IF;
 END_FOR;
 
 
@@ -509,12 +490,12 @@ END_FOR;
 (*  6 . alarm word                                                       *)
 (* ==================================================================== *)
 
-alarm_w := 0;
-IF jam_latched THEN   alarm_w := alarm_w OR 1; END_IF;
-IF estop_latched THEN alarm_w := alarm_w OR 2; END_IF;
-IF NOT estop_chain THEN alarm_w := alarm_w OR 4; END_IF;
-IF stall_on THEN      alarm_w := alarm_w OR 8; END_IF;
-IF tracker_full THEN  alarm_w := alarm_w OR 16; END_IF;
+alarm_w := WORD#0;
+IF jam_latched THEN   alarm_w := alarm_w OR WORD#1; END_IF;
+IF estop_latched THEN alarm_w := alarm_w OR WORD#2; END_IF;
+IF NOT estop_chain THEN alarm_w := alarm_w OR WORD#4; END_IF;
+IF stall_on THEN      alarm_w := alarm_w OR WORD#8; END_IF;
+IF tracker_full THEN  alarm_w := alarm_w OR WORD#16; END_IF;
 
 
 (* ==================================================================== *)
@@ -555,7 +536,7 @@ q10 := REAL_TO_INT(qual * 1000.0);
 (*  8 . outputs and telemetry                                            *)
 (* ==================================================================== *)
 
-lamp_g := (state = 2) AND (alarm_w = 0);
+lamp_g := (state = 2) AND (alarm_w = WORD#0);
 lamp_a := (state = 1) OR (state = 0);
 lamp_r := (state = 3) OR (state = 4);
 horn := horn_on;
