@@ -28,33 +28,40 @@ RUNTIME_TIMEOUT = 20.0
 def twin():
     t = Twin(seed=2026)
     t.start()
-    # a runtime polls the twin; without one the heartbeat never moves and
-    # nothing else in this file is meaningful
-    hb0 = t.store.getValues(3, 1, 1)[0]
-    got_heartbeat = True
     try:
-        scenarios.wait_for(
-            lambda: t.store.getValues(3, 1, 1)[0] != hb0,
-            RUNTIME_TIMEOUT, poll=1.0, what="runtime heartbeat")
-    except TimeoutError:
-        got_heartbeat = False
-    if not got_heartbeat:
-        t.close()
-        pytest.skip("OpenPLC runtime not polling the twin - start it and "
-                    "configure the Modbus master (docs/03-commissioning.md)")
-    t.pulse_start()                       # line starts at IDLE
-    scenarios.wait_for(lambda: t.store.getValues(3, 2, 1)[0] == 2, 15,
-                       what="line reaching RUN")
-    yield t
-    t.close()
+        # a runtime polls the twin; without one the heartbeat never moves and
+        # nothing else in this file is meaningful
+        hb0 = t.store.getValues(3, 1, 1)[0]
+        got_heartbeat = True
+        try:
+            scenarios.wait_for(
+                lambda: t.store.getValues(3, 1, 1)[0] != hb0,
+                RUNTIME_TIMEOUT, poll=1.0, what="runtime heartbeat")
+        except TimeoutError:
+            got_heartbeat = False
+        if not got_heartbeat:
+            pytest.skip("OpenPLC runtime not polling the twin - start it and "
+                        "configure the Modbus master (docs/03-commissioning.md)")
+        t.set_feed(False)                 # the tests own the piece flow;
+        scenarios.start_line(t)           # a cold-booted runtime latches its
+        yield t                           # chain fault, so this may need two
+    finally:                              # start presses (see start_line)
+        t.close()                             # always free the port + master
 
 
 def test_every_verdict_class_routes_correctly(twin):
     t = twin
     kinds = ["standard", "metal", "tall", "light", "heavy"] * 3   # 15 pieces
+    # pacing note: pieces are 100..200 mm long on a 120 mm/s belt. Two
+    # constraints bite on the live runtime, where the phase 1 web sim
+    # tolerated a 0.35 s batch: (a) a piece blocks the photo-eye for
+    # len/120 s (up to 1.7 s), so consecutive rises need > 1.7 s of gap or
+    # the runtime registers two pieces as one; (b) a piece spends ~25..29 s
+    # in transit, so at 2.5 s pacing the batch holds ~12 concurrent pieces -
+    # inside the runtime's 16 tracker slots.
     for k in kinds:
         t.spawn(k)
-        time.sleep(0.35)
+        time.sleep(2.5)
     scenarios.wait_for(lambda: len(t.snapshot()["pieces"]) >= len(kinds), 90,
                        what="all pieces routed")
     snap = t.snapshot()

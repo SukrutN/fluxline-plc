@@ -119,6 +119,39 @@ the next author doesn't re-learn them:
 5. **No BOM.** A UTF-8 BOM at the top of the file makes matiec *silently*
    compile an empty program — no error, all-zero output. Save as plain UTF-8.
 
+## Runtime bring-up notes (verified against live OpenPLC v3)
+
+Two things bit us on the first live run against a real runtime. Kept here so
+they never bite again:
+
+1. **The file must end in a CONFIGURATION/RESOURCE wrapper.** The runtime
+   compiles the uploaded `.st` standalone (`iec2c -f -l -p -r -R -a`); only a
+   file that carries its own `CONFIGURATION … RESOURCE … PROGRAM … WITH … :
+   <name>` task binding yields the `Config0.c`/`Res0.c` the core links
+   against. `fluxline.st` ships this wrapper at the bottom — leave it there.
+2. **Modbus-master locators are wire address + 100.** The runtime stages a
+   master device's registers in its buffer region starting at index 100
+   (`updateBuffersIn_MB`/`updateBuffersOut_MB` in
+   `webserver/core/modbus_master.cpp`), so inside the ST program every
+   located variable carries the register's wire address plus 100 —
+   `%IX100.0` for DI 0, `%IW100/102/104` for IR 0/2/4, `%QX100.0…` for
+   coils, `%QW101` for HR 1. Everything else (device config in the web UI,
+   `docs/*.md`, the twin, the HMI) speaks plain wire addresses. Locators
+   written 0-based compile fine and run forever — with the master then
+   writing nothing but zeros to the device. Ask us how we know.
+3. **A rig-line starts in ESTOP.** The runtime's very first scans run while
+   no master is connected, so on a simulated chain every DI reads open and
+   the chain fault latches — correct fail-safe behavior, wrong-looking
+   quiet red lamp. The first start press clears the latch, the second
+   starts the belt. `scenarios.start_line()` encodes the press-until-RUN
+   dance so tests and the CLI cannot diverge.
+
+Building the runtime itself on a modern toolchain (Ubuntu 26.04, CMake ≥ 4,
+GCC 15) takes two deviations from its installer: run the `disable_opendnp3`
+path before installing the libraries, and pass
+`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` to every `cmake` call (matiec,
+libmodbus, snap7, webserver). After that the master polls the twin happily.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

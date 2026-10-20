@@ -15,6 +15,7 @@ Run standalone:  python twin.py          (serves :1502, feeds pieces)
 Use in tests:    from twin import Twin; t = Twin(); t.start()
 """
 
+import asyncio
 import json
 import os
 import random
@@ -27,9 +28,15 @@ from pymodbus.datastore import (
     ModbusSlaveContext,
 )
 try:
-    from pymodbus.server import StartTcpServer          # pymodbus >= 3.0
+    from pymodbus.server.async_io import ModbusTcpServer   # pymodbus >= 3.0
+    SERVER_ASYNC = True
 except ImportError:                                      # pragma: no cover
-    from pymodbus.server.sync import StartTcpServer      # pymodbus 2.x
+    try:
+        from pymodbus.server.sync import ModbusTcpServer  # pymodbus 2.x
+        SERVER_ASYNC = False
+    except ImportError:
+        ModbusTcpServer = None                            # no backend
+        SERVER_ASYNC = None
 
 # ---------------------------------------------------------------- geometry
 
@@ -109,23 +116,84 @@ class Twin:
         self.chute_until = 0.0
         self.belt_run = False
         self.sp_mms = 120.0
+        # server lifecycle state (start()/close() manage these) - note the
+        # deliberate use of _srv_loop: _loop is this class's physics loop
+        # method, and Thread(target=self._loop) binds it at start()
+        self.server = None
+        self._srv_loop = None
+        self._ready = threading.Event()
+        self._serve_error = None
 
     # ------------------------------------------------ lifecycle
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.server_thread = threading.Thread(
-            target=StartTcpServer,
-            kwargs=dict(context=self.context, address=("127.0.0.1", self.port)),
-            daemon=True,
-        )
+        self.server_thread = threading.Thread(target=self._serve, daemon=True)
         self.server_thread.start()
         self.thread.start()
+        # pymodbus builds its asyncio server inside this thread (its base
+        # class requires a running loop); wait until the port is bound or
+        # the server thread gave up, so failures surface as exceptions here
+        if not self._ready.wait(5.0):
+            detail = "" if self._serve_error is None else f" - {self._serve_error!r}"
+            raise RuntimeError(
+                f"twin Modbus server did not bind 127.0.0.1:{self.port} "
+                f"in 5 s{detail}")
         time.sleep(0.2)
+
+    def _serve(self):
+        """Run the Modbus server on an event loop this instance owns.
+
+        Ownership matters: a bare ``StartTcpServer`` in a daemon thread can
+        only be stopped by killing the whole process, so back-to-back twins
+        (pytest fixtures) would all fail to rebind the port while the first
+        twin's orphaned server kept serving a dead context."""
+        try:
+            if ModbusTcpServer is None:
+                raise RuntimeError("no pymodbus server backend is importable")
+            if SERVER_ASYNC:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._srv_loop = loop
+
+                async def _run():
+                    srv = ModbusTcpServer(
+                        self.context, address=("127.0.0.1", self.port))
+                    await srv.listen()        # the port is actually bound here
+                    self.server = srv
+                    self._ready.set()          # announce only once bind succeeded
+                    await srv.serving          # returns when shutdown() completes
+
+                loop.run_until_complete(_run())
+            else:
+                self.server = ModbusTcpServer(
+                    context=self.context, address=("127.0.0.1", self.port))
+                self._ready.set()
+                self.server.serve_forever()
+        except Exception as exc:                        # pragma: no cover
+            self._serve_error = exc
+            self._ready.set()
+            print(f"[twin] server thread ended: {exc}")
 
     def close(self):
         self.stop_evt.set()
         time.sleep(0.1)
+        server, loop = self.server, self._srv_loop
+        self.server = None
+        self._srv_loop = None
+        if server is not None:
+            try:
+                if SERVER_ASYNC and loop is not None:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        server.shutdown(), loop)
+                    fut.result(timeout=3.0)
+                else:
+                    server.shutdown()
+            except Exception as exc:                    # pragma: no cover
+                print(f"[twin] server shutdown error: {exc}")
+            finally:
+                if self.server_thread is not None:
+                    self.server_thread.join(timeout=3.0)
 
     # ------------------------------------------------ scenario API
 
@@ -138,7 +206,7 @@ class Twin:
         prof = dict(profiles()[kind])
         prof["kind"] = kind
         prof["len"] = self.rng.uniform(100, 200)
-        prof["pos"] = -prof["len"] / 2 - 20.0   # front edge approaching PE
+        prof["pos"] = -30.0        # front edge just short of the PE beam
         prof["id"] = self.seq
         self.seq += 1
         self.pieces.append(prof)
@@ -234,7 +302,11 @@ class Twin:
                     p["pinned"] = True       # wedged in front of the photo-eye
 
             # sensors
-            pe = any(-p["len"] / 2 - 20.0 < p["pos"] < p["len"] / 2 + 20.0 or p.get("pinned")
+            # sensors - the PE is a through-beam at position 0, blocked while
+            # a piece's body covers it. The rising edge is therefore the front
+            # edge at 0.0, which is precisely the anchor the runtime's
+            # dead-reckoned tracker slots assume (slot pos starts at 0).
+            pe = any(0.0 <= p["pos"] <= p["len"] or p.get("pinned")
                      for p in self.pieces)
             self._set_di(0, pe)
             metal_here = any(p["metal"] and abs(p["pos"] - ID_POS) < 60 for p in self.pieces)
@@ -243,9 +315,17 @@ class Twin:
             self._set_di(5, now < self.pb_start_until)
             self._set_di(6, now < self.pb_stop_until)
 
-            height_p = next((p for p in self.pieces if abs(p["pos"] - HS_POS) < 40), None)
+            # sensor exposures mirror the runtime's sampling windows
+            # (hs_win 80 / lc_win 120 in the program), guarded by 20 mm so
+            # every value the runtime max-tracks stays valid for its whole
+            # window even with master-cycle latency
+            height_p = next(
+                (p for p in self.pieces
+                 if HS_POS - 20 <= p["pos"] <= HS_POS + 100), None)
             self._set_ir(0, height_p["height"] / HEIGHT_MAX * RAW_MAX if height_p else 0)
-            weight_p = next((p for p in self.pieces if abs(p["pos"] - LC_POS) < 60), None)
+            weight_p = next(
+                (p for p in self.pieces
+                 if LC_POS - 20 <= p["pos"] <= LC_POS + 140), None)
             self._set_ir(2, weight_p["weight"] / WEIGHT_MAX * RAW_MAX if weight_p else 0)
             self._set_ir(4, self.sp_mms / SPEED_MAX * RAW_MAX if belt_v > 0 else 0)
 
@@ -257,7 +337,14 @@ class Twin:
                 if not divs[lane]:
                     continue
                 gate = {1: G_L1, 2: G_L2, 3: G_L3, 4: G_RJ}[lane]
-                p = next((p for p in self.pieces if gate - 60 <= p["pos"] <= gate + 200), None)
+                # the grab is the FRONT crossing the gate point: the runtime
+                # pre-arms the coil 120 mm before the front and holds it
+                # until this piece's confirm, so at the crossing the arm is
+                # always up. The window stays tight so ownership is unique -
+                # wider spans once let a following piece's pre-arm record a
+                # long piece still on the belt after the gate.
+                p = next((p for p in self.pieces
+                         if gate - 5 <= p["pos"] <= gate + 25), None)
                 if p is not None:
                     p["lane_got"] = lane
                     p["expected"] = expected_lane(p)

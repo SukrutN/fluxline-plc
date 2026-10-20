@@ -25,6 +25,30 @@ def wait_for(predicate, timeout, poll=0.5, what="condition"):
     raise TimeoutError(f"scenario: {what} not reached within {timeout}s")
 
 
+def start_line(t, presses=4, per_press=6.0):
+    """Press start until the line runs.
+
+    A runtime cold-booted on the twin latches its E-stop chain fault: the
+    Modbus master connects only after the scan loop is up, so the very first
+    scans read the chain open. The first press then merely clears that latch
+    (ESTOP -> IDLE) and the next one actually starts the belt - the state
+    machine consumes exactly one start edge per press, also when restarting
+    from IDLE or JAM. Calling this on an already running line is a no-op,
+    so scenarios can assume RUN without caring what ran before them."""
+    for _ in range(presses):
+        if t.store.getValues(3, 2, 1)[0] == 2:
+            return
+        t.pulse_start()
+        try:
+            wait_for(lambda: t.store.getValues(3, 2, 1)[0] == 2, per_press,
+                     what="line reaching RUN")
+            return
+        except TimeoutError:
+            continue
+    raise TimeoutError("scenario: line reaching RUN not reached "
+                       f"within {presses} start presses")
+
+
 def kind_expect(kind):
     return {"standard": 1, "metal": 2, "tall": 3, "light": 4, "heavy": 4, "jam": 3}[kind]
 
@@ -44,7 +68,7 @@ def batch_line(t):
 def jam_watchdog(t, jam_limit_s=8):
     """A wedged piece must trip the JAM state inside the watchdog window."""
     t.set_feed(False)
-    t.pulse_start()
+    start_line(t)
     time.sleep(1.0)
     t.spawn("jam")                       # pins itself in front of the photo-eye
     wait_for(lambda: t.store.getValues(3, 2, 1)[0] == 3, jam_limit_s + 10,
@@ -59,7 +83,7 @@ def jam_watchdog(t, jam_limit_s=8):
 def estop_chain(t):
     """Opening the chain must drop the belt the same scan and latch."""
     t.set_feed(False)
-    t.pulse_start()
+    start_line(t)
     time.sleep(1.0)
     t.open_estop()
     wait_for(lambda: not t._co(0), 5, what="belt dropped on chain open")

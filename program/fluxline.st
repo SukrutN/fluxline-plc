@@ -24,57 +24,57 @@
 PROGRAM FLUXLINE
 VAR
   (* ---- digital inputs - see docs/01-io-map.md ---- *)
-  pe_raw        AT %IX0.0 : BOOL;  (* photo-eye: piece present *)
-  id_raw        AT %IX0.2 : BOOL;  (* inductive probe: metal *)
-  estop_chain   AT %IX0.4 : BOOL;  (* E-stop chain: TRUE = healthy, FALSE = tripped *)
-  pb_start_raw  AT %IX0.5 : BOOL;  (* start pushbutton *)
-  pb_stop_raw   AT %IX0.6 : BOOL;  (* stop pushbutton *)
-  gate_confirm  AT %IX0.7 : BOOL;  (* piece has left the belt at a lane gate *)
-  chute_pe      AT %IX1.0 : BOOL;  (* reject chute photo-eye *)
+  pe_raw        AT %IX100.0 : BOOL;  (* photo-eye: piece present *)
+  id_raw        AT %IX100.2 : BOOL;  (* inductive probe: metal *)
+  estop_chain   AT %IX100.4 : BOOL;  (* E-stop chain: TRUE = healthy, FALSE = tripped *)
+  pb_start_raw  AT %IX100.5 : BOOL;  (* start pushbutton *)
+  pb_stop_raw   AT %IX100.6 : BOOL;  (* stop pushbutton *)
+  gate_confirm  AT %IX100.7 : BOOL;  (* piece has left the belt at a lane gate *)
+  chute_pe      AT %IX101.0 : BOOL;  (* reject chute photo-eye *)
 
   (* ---- analog inputs ---- *)
-  height_raw    AT %IW0 : INT;     (* 0..27648 -> 0..400 mm *)
-  weight_raw    AT %IW2 : INT;     (* 0..27648 -> 0..30000 g *)
-  speed_fb_raw  AT %IW4 : INT;     (* 0..27648 -> 0..600 mm/s *)
+  height_raw    AT %IW100 : INT;     (* 0..27648 -> 0..400 mm *)
+  weight_raw    AT %IW102 : INT;     (* 0..27648 -> 0..30000 g *)
+  speed_fb_raw  AT %IW104 : INT;     (* 0..27648 -> 0..600 mm/s *)
 
   (* ---- digital outputs ---- *)
-  belt_run      AT %QX0.0 : BOOL;  (* belt VFD enable *)
-  div_l1        AT %QX0.1 : BOOL;  (* diverter L01 solenoid *)
-  div_l2        AT %QX0.2 : BOOL;  (* diverter L02 solenoid *)
-  div_l3        AT %QX0.3 : BOOL;  (* diverter L03 solenoid *)
-  div_rj        AT %QX0.4 : BOOL;  (* reject pusher *)
-  lamp_g        AT %QX0.5 : BOOL;  (* stack light green *)
-  lamp_a        AT %QX0.6 : BOOL;  (* stack light amber *)
-  lamp_r        AT %QX0.7 : BOOL;  (* stack light red *)
-  horn          AT %QX1.0 : BOOL;  (* alarm horn *)
+  belt_run      AT %QX100.0 : BOOL;  (* belt VFD enable *)
+  div_l1        AT %QX100.1 : BOOL;  (* diverter L01 solenoid *)
+  div_l2        AT %QX100.2 : BOOL;  (* diverter L02 solenoid *)
+  div_l3        AT %QX100.3 : BOOL;  (* diverter L03 solenoid *)
+  div_rj        AT %QX100.4 : BOOL;  (* reject pusher *)
+  lamp_g        AT %QX100.5 : BOOL;  (* stack light green *)
+  lamp_a        AT %QX100.6 : BOOL;  (* stack light amber *)
+  lamp_r        AT %QX100.7 : BOOL;  (* stack light red *)
+  horn          AT %QX101.0 : BOOL;  (* alarm horn *)
 
   (* ---- word outputs: telemetry over Modbus holding registers ---- *)
-  sp_raw        AT %QW0 : INT;     (* belt speed setpoint raw *)
-  heartbeat     AT %QW1 : INT;     (* increments 1x per second - supervision *)
-  state_w       AT %QW2 : INT;     (* 0 INIT 1 IDLE 2 RUN 3 JAM 4 ESTOP *)
-  alarm_w       AT %QW3 : WORD;    (* bit0 JAM bit1 ESTOP bit2 CHAIN bit3 STALL bit4 FULL *)
-  a10           AT %QW4 : INT;     (* availability x10 *)
-  p10           AT %QW5 : INT;     (* performance x10 *)
-  q10           AT %QW6 : INT;     (* quality x10 *)
-  c_l1          AT %QW7 : INT;     (* L01 pieces *)
-  c_l2          AT %QW8 : INT;     (* L02 pieces *)
-  c_l3          AT %QW9 : INT;     (* L03 pieces *)
-  c_rj          AT %QW10 : INT;    (* reject pieces *)
-  c_detect      AT %QW11 : INT;    (* detected pieces *)
-  c_routed      AT %QW12 : INT;    (* routed pieces, all lanes *)
-  ppm           AT %QW13 : INT;    (* rolling pieces per minute *)
-  speed_echo    AT %QW14 : INT;    (* belt speed mm/s, derived *)
-  version_w     AT %QW19 : INT;    (* program version, 101 = 1.0.1 *)
+  sp_raw        AT %QW100 : INT;     (* belt speed setpoint raw *)
+  heartbeat     AT %QW101 : INT;     (* increments 1x per second - supervision *)
+  state_w       AT %QW102 : INT;     (* 0 INIT 1 IDLE 2 RUN 3 JAM 4 ESTOP *)
+  alarm_w       AT %QW103 : WORD;    (* bit0 JAM bit1 ESTOP bit2 CHAIN bit3 STALL bit4 FULL *)
+  a10           AT %QW104 : INT;     (* availability x10 *)
+  p10           AT %QW105 : INT;     (* performance x10 *)
+  q10           AT %QW106 : INT;     (* quality x10 *)
+  c_l1          AT %QW107 : INT;     (* L01 pieces *)
+  c_l2          AT %QW108 : INT;     (* L02 pieces *)
+  c_l3          AT %QW109 : INT;     (* L03 pieces *)
+  c_rj          AT %QW110 : INT;    (* reject pieces *)
+  c_detect      AT %QW111 : INT;    (* detected pieces *)
+  c_routed      AT %QW112 : INT;    (* routed pieces, all lanes *)
+  ppm           AT %QW113 : INT;    (* rolling pieces per minute *)
+  speed_echo    AT %QW114 : INT;    (* belt speed mm/s, derived *)
+  version_w     AT %QW119 : INT;    (* program version, 101 = 1.0.1 *)
 
   (* ---- config: written over Modbus holding registers, clamped below ---- *)
-  cfg_tall_mm   AT %QW20 : INT;    (* tall threshold mm.    default 165   *)
-  cfg_min_g     AT %QW21 : INT;    (* weight band min g.    default 2000  *)
-  cfg_max_g     AT %QW22 : INT;    (* weight band max g.    default 12000 *)
-  cfg_jam_s     AT %QW23 : INT;    (* jam watchdog s.       default 8     *)
-  cfg_ideal     AT %QW24 : INT;    (* ideal pieces/min.     default 34    *)
-  cfg_prearm    AT %QW25 : INT;    (* diverter pre-arm mm.  default 120   *)
-  cfg_scan_ms   AT %QW26 : INT;    (* scan period ms.       default 10    *)
-  cfg_belt_mms  AT %QW27 : INT;    (* belt speed mm/s.      default 120   *)
+  cfg_tall_mm   AT %QW120 : INT;    (* tall threshold mm.    default 165   *)
+  cfg_min_g     AT %QW121 : INT;    (* weight band min g.    default 2000  *)
+  cfg_max_g     AT %QW122 : INT;    (* weight band max g.    default 12000 *)
+  cfg_jam_s     AT %QW123 : INT;    (* jam watchdog s.       default 8     *)
+  cfg_ideal     AT %QW124 : INT;    (* ideal pieces/min.     default 34    *)
+  cfg_prearm    AT %QW125 : INT;    (* diverter pre-arm mm.  default 120   *)
+  cfg_scan_ms   AT %QW126 : INT;    (* scan period ms.       default 10    *)
+  cfg_belt_mms  AT %QW127 : INT;    (* belt speed mm/s.      default 120   *)
 END_VAR
 
 VAR
@@ -563,3 +563,11 @@ state_w := state;
 version_w := 101;
 
 END_PROGRAM
+
+CONFIGURATION Config0
+
+  RESOURCE Res0 ON PLC
+    TASK Main(INTERVAL := T#10ms,PRIORITY := 0);
+    PROGRAM Inst0 WITH Main : FLUXLINE;
+  END_RESOURCE
+END_CONFIGURATION
