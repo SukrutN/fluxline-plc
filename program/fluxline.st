@@ -34,8 +34,9 @@ STRUCT
   routed  : BOOL;      (* divert issued and completed *)
   id_done : BOOL;      (* ID window consumed *)
   lc_done : BOOL;      (* LC window consumed, verdict final *)
-END_STRUCT;
-END_TYPE;
+END_STRUCT
+;
+END_TYPE
 
 
 (* -------------------------------------------------------------------- *)
