@@ -1,5 +1,7 @@
 # FLUXLINE — Line 01 · PLC Program
 
+[![CI](https://github.com/SukrutN/fluxline-plc/actions/workflows/ci.yml/badge.svg)](https://github.com/SukrutN/fluxline-plc/actions/workflows/ci.yml)
+
 The machine itself. IEC 61131-3 Structured Text for the
 [OpenPLC runtime](https://github.com/thiagoralves/OpenPLC_v3): a 3-way
 conveyor sorting line with four sensors, three diverter gates, a reject
